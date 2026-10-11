@@ -6,8 +6,7 @@ pkgrel=1
 pkgdesc='Write disk images to USB drives and SD cards (GTK4/libadwaita, udisks2)'
 arch=('any')
 url='https://github.com/adamcestephenson/linux_usbflasher'
-# The repository does not contain a license file yet; set this once it does.
-license=('LicenseRef-unspecified')
+license=('MIT')
 depends=(
   'python'
   'python-gobject'
@@ -53,4 +52,5 @@ package() {
     "$pkgdir/usr/share/applications/io.github.adamcestephenson.UsbFlasher.desktop"
   install -Dm644 data/icons/hicolor/scalable/apps/io.github.adamcestephenson.UsbFlasher.svg \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.adamcestephenson.UsbFlasher.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

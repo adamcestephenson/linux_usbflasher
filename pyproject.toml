@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "usb-flasher"
 version = "0.1.0"
 description = "Flash disk images to USB drives (GTK4/libadwaita, udisks2)"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 
 [project.scripts]
 usb-flasher = "usb_flasher.__main__:main"

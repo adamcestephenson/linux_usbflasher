@@ -193,3 +193,9 @@ udisksctl loop-delete -b /dev/loop0
 
 udisks doesn't ask for a password for loop devices you set up yourself, so
 this doesn't exercise the polkit prompt.
+
+## License
+
+[MIT](LICENSE) © 2026 Adam Stephenson. Anyone may use, modify and redistribute
+this software, including commercially, as long as the copyright and license
+notice are kept.
