@@ -71,6 +71,16 @@ class VerifyResult(Result):
 ProgressCallback = Callable[[Progress], None]
 
 
+def format_eta(seconds: float | None) -> str:
+    """``mm:ss`` (or ``h:mm:ss``) for an ETA; ``--:--`` if unknown."""
+    if seconds is None:
+        return "--:--"
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
 def _chunk_digest(data) -> bytes:
     return hashlib.blake2b(data, digest_size=16).digest()
 

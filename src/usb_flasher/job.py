@@ -52,9 +52,18 @@ class FlashOutcome:
     errno: int | None = None
     warnings: list[str] = field(default_factory=list)  # non-fatal problems
     drive_modified: bool = False  # True once any data may have been written
+    ejected: bool = False  # the drive was powered off after a successful flash
 
 
 INCOMPLETE = "The drive now contains an incomplete image."
+
+
+def eject_drive(client: Client, block_path: str, drive_path: str) -> None:
+    """Unmount anything on the disk (e.g. partitions automounted after a
+    flash) and power the drive off. Raises on failure."""
+    for fs in mounted_filesystems(client.snapshot(), block_path):
+        client.unmount(fs)
+    client.power_off(drive_path)
 
 
 def _status_for(e: Exception) -> Status:
@@ -264,24 +273,17 @@ class FlashJob:
         except Exception as e:  # noqa: BLE001 - cosmetic; udev also rescans on close
             warnings.append(f"Could not rescan partitions: {e}")
 
-        if self.eject:
-            warnings.extend(self._eject(drive))
+        ejected = False
+        if self.eject and drive.drive_path is not None:  # loops: nothing to power off
+            self._enter(Stage.EJECTING)
+            try:
+                eject_drive(self.client, self.target, drive.drive_path)
+                ejected = True
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"Flashed successfully, but ejecting failed: {e}")
 
         return self._outcome(
             Status.SUCCESS, "Flash complete", sha256=written.sha256,
             image_size=image_size, bytes_done=image_size, warnings=warnings,
-            drive_modified=True,
+            drive_modified=True, ejected=ejected,
         )
-
-    def _eject(self, drive: DriveInfo) -> list[str]:
-        if drive.drive_path is None:
-            return []  # loop devices: nothing to power off
-        self._enter(Stage.EJECTING)
-        try:
-            # Partitions may have been automounted after the rescan.
-            for fs in mounted_filesystems(self.client.snapshot(), self.target):
-                self.client.unmount(fs)
-            self.client.power_off(drive.drive_path)
-        except Exception as e:  # noqa: BLE001
-            return [f"Flashed successfully, but ejecting failed: {e}"]
-        return []

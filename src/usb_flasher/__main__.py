@@ -1,4 +1,4 @@
-"""Command-line entry point. The GUI will be added in a later milestone."""
+"""Entry point: the GUI by default, or CLI mode with --list-drives / --flash."""
 
 from __future__ import annotations
 
@@ -59,15 +59,8 @@ def _list_drives(args) -> int:
     return 0
 
 
-def _format_eta(seconds: float | None) -> str:
-    if seconds is None:
-        return "--:--"
-    seconds = int(seconds)
-    return f"{seconds // 60:02d}:{seconds % 60:02d}"
-
-
 def _flash(args) -> int:
-    from .flasher import Progress, Status
+    from .flasher import Progress, Status, format_eta
     from .image import ImageError, inspect_image
     from .job import FlashJob, Stage
     from .udisks import UDisksClient, UDisksError
@@ -137,7 +130,7 @@ def _flash(args) -> int:
             return
         last_line[0] = now
         line = (f"  {p.fraction * 100:5.1f}%  {format_size(p.bytes_done):>9} / "
-                f"{format_size(p.total)}  {format_size(int(p.speed))}/s  ETA {_format_eta(p.eta)}")
+                f"{format_size(p.total)}  {format_size(int(p.speed))}/s  ETA {format_eta(p.eta)}")
         if tty:
             print("\r" + line, end="", file=sys.stderr, flush=True)
         elif p.bytes_done == p.total:
@@ -173,7 +166,12 @@ def _flash(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="usb-flasher")
+    parser = argparse.ArgumentParser(
+        prog="usb-flasher",
+        description="Write disk images to USB drives. Starts the GUI unless "
+                    "--list-drives or --flash is given.",
+    )
+    parser.add_argument("image", nargs="?", help="image to preselect in the GUI")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--list-drives", action="store_true", help="list candidate target drives")
     parser.add_argument("--all", action="store_true", help="also show hidden (non-removable) drives")
@@ -196,8 +194,22 @@ def main(argv: list[str] | None = None) -> int:
         return _flash(args)
     if args.list_drives:
         return _list_drives(args)
-    parser.error("nothing to do (the GUI is not implemented yet; try --list-drives or --flash)")
-    return 2
+    return _gui(args)
+
+
+def _gui(args) -> int:
+    from .app import FlasherApp
+
+    import signal
+
+    from gi.repository import GLib
+
+    app = FlasherApp(allow_loop=args.dev_allow_loop)
+    # Ctrl-C in the terminal behaves like the Quit action, so an active flash
+    # is confirmed instead of killed (PyGObject's default quits immediately).
+    signal.signal(signal.SIGINT, lambda *_: GLib.idle_add(app.activate_action, "quit", None))
+    gtk_argv = [sys.argv[0]] + ([os.path.abspath(args.image)] if args.image else [])
+    return app.run(gtk_argv)
 
 
 if __name__ == "__main__":
