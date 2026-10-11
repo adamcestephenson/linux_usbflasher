@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Flash disk images to USB drives (GTK4/libadwaita, udisks2)"
 requires-python = ">=3.11"
 
+[project.scripts]
+usb-flasher = "usb_flasher.__main__:main"
+
 [project.optional-dependencies]
 dev = ["pytest"]
 
