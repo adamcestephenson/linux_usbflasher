@@ -132,6 +132,16 @@ def _mount_points(snapshot: Snapshot, path: str) -> list[str]:
     return list(fs.get("MountPoints", ())) if fs else []
 
 
+def mounted_filesystems(snapshot: Snapshot, root: str) -> list[str]:
+    """Object paths of mounted filesystems on ``root`` or anything stacked on it,
+    deepest first (so stacked mounts are unmounted before what they sit on)."""
+    found = [
+        path for path in _descendants(snapshot, _device_index(snapshot), root)
+        if _mount_points(snapshot, path)
+    ]
+    return list(reversed(found))
+
+
 def _block_holding_path(snapshot: Snapshot, file_path: str) -> str | None:
     """Block object whose filesystem contains ``file_path`` (longest mount match)."""
     best, best_len = None, -1
@@ -277,19 +287,28 @@ def _decode_bytestring(value: Iterable[int]) -> str:
     return bytes(value).rstrip(b"\0").decode("utf-8", "surrogateescape")
 
 
+def _decode_prop(name: str, value: Any) -> Any:
+    if name in _BYTESTRING_PROPS:
+        return _decode_bytestring(value)
+    if name in _BYTESTRING_LIST_PROPS:
+        return [_decode_bytestring(v) for v in value]
+    return value
+
+
 def _unpack_props(proxy) -> dict[str, Any]:
     props = {}
     for name in proxy.get_cached_property_names() or ():
         value = proxy.get_cached_property(name)
         if value is None:
             continue
-        value = value.unpack()
-        if name in _BYTESTRING_PROPS:
-            value = _decode_bytestring(value)
-        elif name in _BYTESTRING_LIST_PROPS:
-            value = [_decode_bytestring(v) for v in value]
-        props[name] = value
+        props[name] = _decode_prop(name, value.unpack())
     return props
+
+
+def _add_holders(ifaces: dict[str, dict[str, Any]]) -> None:
+    block = ifaces.get("Block")
+    if block is not None and block.get("Device"):
+        block["Holders"] = read_holders(block["Device"])
 
 
 def read_holders(device: str, sysfs: str = "/sys/class/block") -> list[str]:
@@ -312,10 +331,25 @@ def snapshot_from_manager(manager) -> dict[str, dict[str, dict[str, Any]]]:
             if not name.startswith(UDISKS_IFACE_PREFIX):
                 continue
             ifaces[name[len(UDISKS_IFACE_PREFIX):]] = _unpack_props(proxy)
-        block = ifaces.get("Block")
-        if block is not None and block.get("Device"):
-            block["Holders"] = read_holders(block["Device"])
+        _add_holders(ifaces)
         snapshot[obj.get_object_path()] = ifaces
+    return snapshot
+
+
+def snapshot_from_managed_objects(
+    objects: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Build a :data:`Snapshot` from the unpacked result of
+    ``org.freedesktop.DBus.ObjectManager.GetManagedObjects`` (``a{oa{sa{sv}}}``)."""
+    snapshot: dict[str, dict[str, dict[str, Any]]] = {}
+    for path, interfaces in objects.items():
+        ifaces = {
+            name[len(UDISKS_IFACE_PREFIX):]: {k: _decode_prop(k, v) for k, v in props.items()}
+            for name, props in interfaces.items()
+            if name.startswith(UDISKS_IFACE_PREFIX)
+        }
+        _add_holders(ifaces)
+        snapshot[path] = ifaces
     return snapshot
 
 
