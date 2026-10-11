@@ -56,6 +56,24 @@ sudo pacman -S python python-gobject gtk4 libadwaita udisks2 polkit
 
 ## Installation
 
+### Arch Linux package
+
+`packaging/arch/PKGBUILD` builds a `usb-flasher-git` package from this
+repository's latest commit. It installs the `usb-flasher` command, the desktop
+entry and the icon system-wide, so no manual launcher setup is needed:
+
+```sh
+git clone https://github.com/adamcestephenson/linux_usbflasher.git
+cd linux_usbflasher/packaging/arch
+makepkg -si
+```
+
+`makepkg` installs the build dependencies, runs the test suite, and then
+installs the package with `pacman`. The package conflicts with a future
+`usb-flasher` release package.
+
+### From a source checkout
+
 PyGObject comes from the system, so create the virtual environment with
 `--system-site-packages`:
 
@@ -143,6 +161,7 @@ src/usb_flasher/
   flasher.py       # write/verify engine on raw file descriptors
   image.py         # image validation
 data/              # desktop entry and app icon
+packaging/arch/    # PKGBUILD
 tests/             # pytest suite
 ```
 
