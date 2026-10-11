@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=USB Flasher
+GenericName=Disk Image Writer
+Comment=Write disk images to USB drives and SD cards
+Exec=usb-flasher %f
+Icon=io.github.adamcestephenson.UsbFlasher
+Terminal=false
+Categories=System;Filesystem;
+Keywords=usb;flash;iso;img;etcher;write;
+MimeType=application/x-iso9660-image;application/x-raw-disk-image;
+StartupNotify=true

@@ -443,3 +443,18 @@ def test_drive_picker(drive_file, image):
         assert picker._handler == 0  # disconnected from the monitor on close
     finally:
         win.destroy()
+
+
+def test_app_icon_is_found():
+    from usb_flasher.app import APP_ID, setup_icons
+
+    setup_icons()
+    theme = Gtk.IconTheme.get_for_display(win_display())
+    assert theme.has_icon(APP_ID)
+    assert Gtk.Window.get_default_icon_name() == APP_ID
+
+
+def win_display():
+    from gi.repository import Gdk
+
+    return Gdk.Display.get_default()

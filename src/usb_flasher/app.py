@@ -6,11 +6,29 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, Gtk  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 
 from . import __version__  # noqa: E402
 
 APP_ID = "io.github.adamcestephenson.UsbFlasher"
+
+# Present when running from a source checkout; an installed copy of the icon
+# in the normal icon theme directories is found without this.
+_SOURCE_ICON_DIR = Path(__file__).resolve().parents[2] / "data" / "icons"
+
+
+def setup_icons() -> None:
+    """Make the app icon available (also from a source checkout) and use it
+    as the default window icon."""
+    display = Gdk.Display.get_default()
+    if display is None:
+        return
+    theme = Gtk.IconTheme.get_for_display(display)
+    if _SOURCE_ICON_DIR.is_dir():
+        theme.add_search_path(str(_SOURCE_ICON_DIR))
+    Gtk.Window.set_default_icon_name(APP_ID)
 
 
 class FlasherApp(Adw.Application):
@@ -27,6 +45,10 @@ class FlasherApp(Adw.Application):
         self.add_action(quit_)
         self.set_accels_for_action("app.quit", ["<Primary>q"])
         self.set_accels_for_action("window.close", ["<Primary>w"])
+
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        setup_icons()
 
     def _get_client(self):
         if self._client is None:
@@ -67,7 +89,7 @@ class FlasherApp(Adw.Application):
 
     def _on_about(self, *_args):
         about = Adw.AboutDialog(
-            application_name="USB Flasher", application_icon="drive-removable-media-symbolic",
+            application_name="USB Flasher", application_icon=APP_ID,
             version=__version__, developer_name="Adam Stephenson",
             website="https://github.com/adamcestephenson/linux_usbflasher",
             comments="Write disk images to USB drives and SD cards.",

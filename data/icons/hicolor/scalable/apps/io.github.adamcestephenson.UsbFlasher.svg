@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
+  <!-- USB stick body -->
+  <rect x="44" y="52" width="40" height="52" rx="7" fill="#ffffff"/>
+  <!-- connector -->
+  <rect x="51" y="30" width="26" height="26" rx="3" fill="#deddda"/>
+  <rect x="56" y="36" width="5" height="8" rx="1" fill="#5e5c64"/>
+  <rect x="67" y="36" width="5" height="8" rx="1" fill="#5e5c64"/>
+  <!-- down arrow on the body -->
+  <path d="M64 62 v22 M54 76 l10 10 l10 -10" fill="none" stroke="#1c71d8"
+        stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

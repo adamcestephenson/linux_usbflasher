@@ -7,9 +7,10 @@ work goes through [udisks2](https://www.freedesktop.org/wiki/Software/udisks/),
 and polkit asks for your password when needed.
 
 > **Status:** early development (v0.1.0). Flashing and verification have been
-> tested end-to-end against loop devices through udisks2. They have **not yet
-> been tested on a real USB stick**, and the polkit password prompt has not
-> been seen in practice. Double-check the target drive before flashing.
+> tested on loop devices and on one real USB stick (a 16 GB Corsair Voyager
+> flashed with a Linux Mint ISO), including the polkit password prompt. That is
+> a small amount of hardware testing, so double-check the target drive before
+> flashing.
 
 ## Features
 
@@ -64,6 +65,24 @@ cd linux_usbflasher
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -e '.[dev]'
 ```
+
+### Application launcher entry (optional)
+
+To start the app from your launcher (Walker, rofi, GNOME, …), link the command
+onto your `PATH` and install the desktop entry and icon for your user:
+
+```sh
+mkdir -p ~/.local/bin
+ln -sf "$PWD/.venv/bin/usb-flasher" ~/.local/bin/usb-flasher
+install -Dm644 data/io.github.adamcestephenson.UsbFlasher.desktop \
+  ~/.local/share/applications/io.github.adamcestephenson.UsbFlasher.desktop
+install -Dm644 data/icons/hicolor/scalable/apps/io.github.adamcestephenson.UsbFlasher.svg \
+  ~/.local/share/icons/hicolor/scalable/apps/io.github.adamcestephenson.UsbFlasher.svg
+```
+
+The `usb-flasher` command must be on `PATH`, otherwise desktop environments hide
+the entry. The entry also lets you pick "USB Flasher" in a file manager's
+"Open With" menu for `.iso` and `.img` files.
 
 ## Usage
 
@@ -123,6 +142,7 @@ src/usb_flasher/
   job.py           # FlashJob: one complete flash, run in a worker thread
   flasher.py       # write/verify engine on raw file descriptors
   image.py         # image validation
+data/              # desktop entry and app icon
 tests/             # pytest suite
 ```
 
