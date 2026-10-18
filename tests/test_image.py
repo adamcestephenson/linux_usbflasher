@@ -77,14 +77,6 @@ def test_unsupported_extension(tmp_path):
         inspect_image(p)
 
 
-@pytest.mark.parametrize("name", ["a.img.xz", "a.iso.gz", "a.zip", "a.img.zst"])
-def test_compressed_rejected(tmp_path, name):
-    p = tmp_path / name
-    p.write_bytes(b"data")
-    with pytest.raises(ImageError, match="Compressed"):
-        inspect_image(p)
-
-
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
 def test_unreadable_file(tmp_path):
     p = make_image(tmp_path / "secret.img")

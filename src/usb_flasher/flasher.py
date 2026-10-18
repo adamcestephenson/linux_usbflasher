@@ -15,7 +15,9 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import BinaryIO, Callable
+
+from .archives import READ_ERRORS
 
 CHUNK_SIZE = 4 * 1024 * 1024
 
@@ -38,6 +40,11 @@ class Progress:
     total: int
     speed: float  # bytes/second, averaged over the phase so far
     eta: float | None  # seconds remaining, None if unknown
+
+    @property
+    def indeterminate(self) -> bool:
+        """The total is not known (compressed image of unknown size)."""
+        return self.total == 0
 
     @property
     def fraction(self) -> float:
@@ -97,15 +104,15 @@ class _ProgressTracker:
             return
         elapsed = time.monotonic() - self.start
         speed = done / elapsed if elapsed > 0 else 0.0
-        eta = (self.total - done) / speed if speed > 0 else None
+        eta = (self.total - done) / speed if speed > 0 and self.total else None
         self.callback(Progress(self.phase, done, self.total, speed, eta))
 
 
-def _read_full(fd: int, buf: memoryview) -> int:
-    """Read from the current position of ``fd`` until ``buf`` is full or EOF."""
+def _read_full(src: BinaryIO, buf: memoryview) -> int:
+    """Read from ``src`` until ``buf`` is full or EOF."""
     got = 0
     while got < len(buf):
-        n = os.readv(fd, [buf[got:]])
+        n = src.readinto(buf[got:])
         if n == 0:
             break
         got += n
@@ -134,57 +141,81 @@ def _pwrite_full(fd: int, data: memoryview, offset: int) -> None:
 
 
 def write_image(
-    src_fd: int,
+    src: BinaryIO | int,
     dst_fd: int,
-    size: int,
+    size: int | None,
     *,
     target_size: int | None = None,
     progress: ProgressCallback | None = None,
     cancel: threading.Event | None = None,
     chunk_size: int = CHUNK_SIZE,
 ) -> WriteResult:
-    """Copy ``size`` bytes from ``src_fd`` (read sequentially) to the start
-    of ``dst_fd`` and fsync it.
+    """Copy ``size`` bytes from ``src`` (read sequentially) to the start of
+    ``dst_fd`` and fsync it.
+
+    ``src`` is a file object with ``readinto`` (e.g. a decompressing reader)
+    or a file descriptor. If ``size`` is None the source is copied until EOF,
+    and the copy fails once it would exceed ``target_size``.
 
     The source is hashed while streaming. Never raises for I/O errors; they
     are reported in the returned result.
     """
-    if size <= 0:
+    if size is not None and size <= 0:
         raise ValueError("size must be positive")
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
 
     def result(status: Status, done: int, **kw) -> WriteResult:
-        return WriteResult(status, Phase.WRITING, done, size, chunk_size=chunk_size, **kw)
+        kw.setdefault("total", size or 0)
+        total = kw.pop("total")
+        return WriteResult(status, Phase.WRITING, done, total, chunk_size=chunk_size, **kw)
 
-    if target_size is not None and size > target_size:
+    if size is not None and target_size is not None and size > target_size:
         return result(
             Status.ERROR,
             0,
             message=f"Image ({size} bytes) is larger than the target ({target_size} bytes)",
         )
 
-    tracker = _ProgressTracker(Phase.WRITING, size, progress)
+    if isinstance(src, int):
+        with open(src, "rb", buffering=0, closefd=False) as reader:
+            return _copy(reader, dst_fd, size, target_size, progress, cancel, chunk_size, result)
+    return _copy(src, dst_fd, size, target_size, progress, cancel, chunk_size, result)
+
+
+def _copy(src, dst_fd, size, target_size, progress, cancel, chunk_size, result) -> WriteResult:
+    tracker = _ProgressTracker(Phase.WRITING, size or 0, progress)
     sha = hashlib.sha256()
     digests: list[bytes] = []
     buf = memoryview(bytearray(chunk_size))
     done = 0
     tracker.report(0)
 
-    while done < size:
+    while size is None or done < size:
         if cancel is not None and cancel.is_set():
             return result(Status.CANCELLED, done, message="Cancelled", chunk_digests=digests)
 
-        want = min(chunk_size, size - done)
+        want = chunk_size if size is None else min(chunk_size, size - done)
         chunk = buf[:want]
         try:
-            got = _read_full(src_fd, chunk)
-        except OSError as e:
+            got = _read_full(src, chunk)
+        except READ_ERRORS as e:
+            reason = getattr(e, "strerror", None) or "the archive is corrupt or truncated"
             return result(
-                Status.ERROR, done, message=f"Error reading image: {e.strerror}",
-                error_offset=done, errno=e.errno,
+                Status.ERROR, done, message=f"Error reading image: {reason}",
+                error_offset=done, errno=getattr(e, "errno", None),
             )
-        if got < want:
+        if size is None:
+            if got == 0:
+                break
+            if target_size is not None and done + got > target_size:
+                return result(
+                    Status.ERROR, done,
+                    message=f"Image is larger than the target ({target_size} bytes)",
+                    error_offset=done, chunk_digests=digests,
+                )
+            chunk = buf[:got]
+        elif got < want:
             return result(
                 Status.ERROR, done + got,
                 message=f"Image ended unexpectedly at byte {done + got} (expected {size})",
@@ -201,8 +232,23 @@ def write_image(
 
         sha.update(chunk)
         digests.append(_chunk_digest(chunk))
-        done += want
+        done += len(chunk)
         tracker.report(done)
+
+    if size is not None:
+        # A reader that yields more than it announced would verify a prefix.
+        try:
+            extra = src.read(1)
+        except READ_ERRORS:
+            extra = b""
+        if extra:
+            return result(
+                Status.ERROR, done,
+                message=f"Image is larger than expected ({size} bytes)",
+                error_offset=done,
+            )
+    elif done == 0:
+        return result(Status.ERROR, 0, message="Image is empty")
 
     try:
         os.fsync(dst_fd)
@@ -212,7 +258,9 @@ def write_image(
             errno=e.errno,
         )
 
-    return result(Status.SUCCESS, done, sha256=sha.hexdigest(), chunk_digests=digests)
+    return result(
+        Status.SUCCESS, done, total=done, sha256=sha.hexdigest(), chunk_digests=digests,
+    )
 
 
 def verify(

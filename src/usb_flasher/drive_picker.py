@@ -27,7 +27,7 @@ def drive_subtitle(drive: DriveInfo) -> str:
 def unusable_reasons(drive: DriveInfo, image: ImageInfo | None) -> list[str]:
     """Why ``drive`` can't be picked for ``image`` (empty if it can)."""
     reasons = list(drive.reasons)
-    if image is not None and drive.size < image.size:
+    if image is not None and image.size is not None and drive.size < image.size:
         reasons.append(f"Too small for this image (needs {format_size(image.size)})")
     return reasons
 

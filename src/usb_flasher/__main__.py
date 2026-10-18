@@ -97,7 +97,8 @@ def _flash(args) -> int:
             print(f"  - {r}", file=sys.stderr)
         return 1
 
-    print(f"Image:  {image.path} ({format_size(image.size)})")
+    size_text = format_size(image.size) if image.size is not None else "size unknown"
+    print(f"Image:  {image.path} ({size_text})")
     print(f"Target: {drive.device} - {drive.label} ({format_size(drive.size)})")
     for w in drive.warnings:
         print(f"warning: {w}", file=sys.stderr)
@@ -129,6 +130,11 @@ def _flash(args) -> int:
         if p.bytes_done != p.total and now - last_line[0] < 0.25:
             return
         last_line[0] = now
+        if p.indeterminate:
+            if tty:
+                print(f"\r  {format_size(p.bytes_done):>9} written  "
+                      f"{format_size(int(p.speed))}/s", end="", file=sys.stderr, flush=True)
+            return
         line = (f"  {p.fraction * 100:5.1f}%  {format_size(p.bytes_done):>9} / "
                 f"{format_size(p.total)}  {format_size(int(p.speed))}/s  ETA {format_eta(p.eta)}")
         if tty:

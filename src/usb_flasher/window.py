@@ -15,8 +15,18 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 from .drive_picker import DrivePicker, drive_subtitle, unusable_reasons  # noqa: E402
 from .drives import DriveInfo, format_size  # noqa: E402
 from .flasher import Progress, Status, format_eta  # noqa: E402
-from .image import SUPPORTED_EXTENSIONS, ImageError, ImageInfo, inspect_image  # noqa: E402
+from .image import (  # noqa: E402
+    COMPRESSED_EXTENSIONS, SUPPORTED_EXTENSIONS, ImageError, ImageInfo, inspect_image,
+)
 from .job import FlashJob, FlashOutcome, Stage, eject_drive  # noqa: E402
+
+def describe_size(img: ImageInfo) -> str:
+    if img.size is None:
+        return f"{format_size(img.file_size)} compressed, uncompressed size unknown"
+    if img.compression:
+        return f"{format_size(img.size)} ({format_size(img.file_size)} compressed)"
+    return format_size(img.size)
+
 
 STAGE_TITLES = {
     Stage.PREPARING: "Preparing…",
@@ -149,7 +159,8 @@ class FlasherWindow(Adw.ApplicationWindow):
         narrow.add_setter(cards, "orientation", Gtk.Orientation.VERTICAL)
         self.add_breakpoint(narrow)
 
-        hint = _label(f"Drop a disk image ({', '.join(SUPPORTED_EXTENSIONS)}) "
+        hint = _label(f"Drop a disk image ({', '.join(SUPPORTED_EXTENSIONS)}, "
+                      f"or compressed: {', '.join(COMPRESSED_EXTENSIONS)}) "
                       "anywhere in this window", "dim-label", "caption", wrap=True)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
                       valign=Gtk.Align.CENTER, margin_top=24, margin_bottom=24,
@@ -225,7 +236,7 @@ class FlasherWindow(Adw.ApplicationWindow):
     def _refresh(self) -> None:
         img = self.image
         if img:
-            self.image_card.detail.set_label(f"{img.path.name}\n{format_size(img.size)}")
+            self.image_card.detail.set_label(f"{img.path.name}\n{describe_size(img)}")
             self.image_card.button.set_label("Change…")
             self.image_card.set_warning(" ".join(img.warnings) or None)
         else:
@@ -258,7 +269,7 @@ class FlasherWindow(Adw.ApplicationWindow):
     def choose_image(self) -> None:
         filters = Gio.ListStore.new(Gtk.FileFilter)
         images = Gtk.FileFilter(name="Disk Images")
-        for ext in SUPPORTED_EXTENSIONS:
+        for ext in SUPPORTED_EXTENSIONS + COMPRESSED_EXTENSIONS:
             images.add_suffix(ext.lstrip("."))
         everything = Gtk.FileFilter(name="All Files")
         everything.add_pattern("*")
@@ -420,9 +431,14 @@ class FlasherWindow(Adw.ApplicationWindow):
             self._progress_scheduled = False
         if p is None or self._stage not in DATA_STAGES:
             return GLib.SOURCE_REMOVE
-        self.progress_bar.set_fraction(p.fraction)
-        detail = (f"{p.fraction * 100:.0f}% · {format_size(p.bytes_done)} of "
-                  f"{format_size(p.total)}")
+        if p.indeterminate:
+            self._start_pulse()
+            detail = f"{format_size(p.bytes_done)} written"
+        else:
+            self._stop_pulse()
+            self.progress_bar.set_fraction(p.fraction)
+            detail = (f"{p.fraction * 100:.0f}% · {format_size(p.bytes_done)} of "
+                      f"{format_size(p.total)}")
         if p.speed > 0:
             detail += f" · {format_size(int(p.speed))}/s · {format_eta(p.eta)} left"
         self.progress_detail.set_label(detail)

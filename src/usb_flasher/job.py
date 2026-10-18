@@ -17,7 +17,8 @@ from typing import Callable, Protocol
 from . import flasher
 from .drives import DriveInfo, Snapshot, classify_drives, mounted_filesystems
 from .flasher import Progress, Status
-from .image import ImageError, check_fits, inspect_image
+from .archives import ArchiveError
+from .image import ImageError, ImageInfo, check_fits, inspect_image
 
 
 class Stage(enum.Enum):
@@ -157,14 +158,14 @@ class FlashJob:
             return self._outcome(Status.ERROR, str(e))
         drive, problem = self._check_drive(snapshot)
         if problem:
-            return self._outcome(Status.ERROR, problem, image_size=image.size)
+            return self._outcome(Status.ERROR, problem, image_size=image.size or 0)
         try:
             check_fits(image.size, drive.size)
         except ImageError as e:
-            return self._outcome(Status.ERROR, str(e), image_size=image.size)
+            return self._outcome(Status.ERROR, str(e), image_size=image.size or 0)
 
         if self._cancelled():
-            return self._outcome(Status.CANCELLED, "Cancelled", image_size=image.size)
+            return self._outcome(Status.CANCELLED, "Cancelled", image_size=image.size or 0)
 
         # Unmount everything on the drive, deepest first.
         mounted = mounted_filesystems(snapshot, self.target)
@@ -175,45 +176,47 @@ class FlashJob:
                     self.client.unmount(fs)
                 except Exception as e:  # noqa: BLE001
                     status = _status_for(e)
-                    return self._outcome(status, str(e), image_size=image.size)
+                    return self._outcome(status, str(e), image_size=image.size or 0)
 
             for attempt in range(UNMOUNT_SETTLE_TRIES):
                 try:
                     snapshot = self.client.snapshot()
                 except Exception as e:  # noqa: BLE001
-                    return self._outcome(Status.ERROR, str(e), image_size=image.size)
+                    return self._outcome(Status.ERROR, str(e), image_size=image.size or 0)
                 if not mounted_filesystems(snapshot, self.target):
                     break
                 time.sleep(UNMOUNT_SETTLE_DELAY)
             else:
                 return self._outcome(
                     Status.ERROR, "The drive is still mounted after unmounting.",
-                    image_size=image.size,
+                    image_size=image.size or 0,
                 )
             drive, problem = self._check_drive(snapshot)
             if problem:
-                return self._outcome(Status.ERROR, problem, image_size=image.size)
+                return self._outcome(Status.ERROR, problem, image_size=image.size or 0)
 
         if self._cancelled():
-            return self._outcome(Status.CANCELLED, "Cancelled", image_size=image.size)
+            return self._outcome(Status.CANCELLED, "Cancelled", image_size=image.size or 0)
 
         self._enter(Stage.OPENING)
         try:
             dst_fd = self.client.open_exclusive(self.target)
         except Exception as e:  # noqa: BLE001
             status = _status_for(e)
-            return self._outcome(status, str(e), image_size=image.size)
+            return self._outcome(status, str(e), image_size=image.size or 0)
 
         self._dst_fd = dst_fd
         try:
             if self._cancelled():
-                return self._outcome(Status.CANCELLED, "Cancelled", image_size=image.size)
-            return self._write_and_verify(image.path, image.size, dst_fd, drive)
+                return self._outcome(Status.CANCELLED, "Cancelled", image_size=image.size or 0)
+            return self._write_and_verify(image, dst_fd, drive)
         finally:
             self._close_dst()
 
-    def _write_and_verify(self, image_path, image_size: int, dst_fd: int,
+    def _write_and_verify(self, image: ImageInfo, dst_fd: int,
                           drive: DriveInfo) -> FlashOutcome:
+        image_size = image.size or 0
+
         def fail(res: flasher.Result, modified: bool) -> FlashOutcome:
             msg = res.message or "Failed"
             if modified and res.status is not Status.SUCCESS and self.stage is Stage.WRITING:
@@ -231,22 +234,15 @@ class FlashJob:
                                  image_size=image_size, errno=e.errno)
 
         try:
-            src_fd = os.open(image_path, os.O_RDONLY | os.O_CLOEXEC)
-        except OSError as e:
-            return self._outcome(Status.ERROR, f"Cannot open image: {e.strerror}",
-                                 image_size=image_size, errno=e.errno)
-        try:
-            try:
-                os.posix_fadvise(src_fd, 0, 0, os.POSIX_FADV_SEQUENTIAL)
-            except OSError:
-                pass
-            self._enter(Stage.WRITING)
-            written = flasher.write_image(
-                src_fd, dst_fd, image_size, target_size=target_size,
-                progress=self.on_progress, cancel=self.cancel, chunk_size=self.chunk_size,
-            )
-        finally:
-            os.close(src_fd)
+            with image.open() as src:
+                self._enter(Stage.WRITING)
+                written = flasher.write_image(
+                    src, dst_fd, image.size, target_size=target_size,
+                    progress=self.on_progress, cancel=self.cancel, chunk_size=self.chunk_size,
+                )
+        except (OSError, ArchiveError) as e:
+            return self._outcome(Status.ERROR, f"Cannot open image: {getattr(e, 'strerror', None) or e}",
+                                 image_size=image_size, errno=getattr(e, "errno", None))
 
         modified = written.bytes_done > 0 or written.status is Status.SUCCESS
         if written.status is not Status.SUCCESS:
@@ -260,7 +256,7 @@ class FlashJob:
             if checked.status is not Status.SUCCESS:
                 return fail(checked, True)
 
-        return self._finish(drive, written, image_size)
+        return self._finish(drive, written, written.total)
 
     def _finish(self, drive: DriveInfo, written: flasher.WriteResult,
                 image_size: int) -> FlashOutcome:

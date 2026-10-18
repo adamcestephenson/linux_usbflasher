@@ -39,6 +39,6 @@ For context when planning, the relevant existing pieces:
   drive back and compares against them.
 - `job.py`: `FlashJob` runs one complete flash in a worker thread.
 - `drives.py`: drive discovery and the safety rules (`classify_drives`).
-- `image.py`: `inspect_image()` validates the source file and rejects
-  compressed extensions.
+- `image.py`: `inspect_image()` validates the source file, looking through
+  compression; `archives.py` holds the streaming decompressors.
 - `udisks.py`: all privileged udisks2 calls.

@@ -37,8 +37,13 @@ and polkit asks for your password when needed.
   mid-flash asks for confirmation.
 - A command-line mode for listing drives and flashing.
 
-Not supported yet: compressed images (`.xz`, `.gz`, `.zst`, `.zip`, …),
-flashing from a URL, writing to several drives at once, and cloning a drive.
+- Compressed images (`.xz`, `.gz`, `.bz2`, `.zip`, and `.zst` on Python 3.14+)
+  are decompressed while writing. For `.gz` and `.bz2` the uncompressed size
+  is unknown up front, so progress is indeterminate and the write fails if
+  the image turns out larger than the drive. A `.zip` must contain exactly
+  one `.img`/`.iso`/`.raw`.
+
+Not supported yet: flashing from a URL, writing to several drives at once, and cloning a drive.
 
 ## Requirements
 
