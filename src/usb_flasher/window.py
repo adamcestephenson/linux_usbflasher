@@ -19,6 +19,8 @@ from .image import (  # noqa: E402
     COMPRESSED_EXTENSIONS, SUPPORTED_EXTENSIONS, ImageError, ImageInfo, inspect_image,
 )
 from .job import FlashJob, FlashOutcome, Stage, eject_drive  # noqa: E402
+from .restore import RestoreJob, RestoreOptions, normalize_label  # noqa: E402
+from .restore_dialog import RestoreDialog  # noqa: E402
 
 def describe_size(img: ImageInfo) -> str:
     if img.size is None:
@@ -36,7 +38,10 @@ STAGE_TITLES = {
     Stage.VERIFYING: "Verifying…",
     Stage.FINISHING: "Finishing…",
     Stage.EJECTING: "Ejecting…",
+    Stage.PARTITIONING: "Erasing…",
+    Stage.FORMATTING: "Formatting…",
 }
+AUTH_STAGES = (Stage.OPENING, Stage.PARTITIONING, Stage.FORMATTING)
 DATA_STAGES = (Stage.WRITING, Stage.VERIFYING)
 
 
@@ -90,7 +95,9 @@ class FlasherWindow(Adw.ApplicationWindow):
         # Flash state (main thread only, except where noted).
         self.worker: threading.Thread | None = None
         self.cancel_event: threading.Event | None = None
-        self.flash_target: DriveInfo | None = None
+        self.flash_target: DriveInfo | None = None  # also the drive being restored
+        self.restoring = False  # the current/last job is a restore, not a flash
+        self.restore_options: RestoreOptions | None = None
         self.last_outcome: FlashOutcome | None = None
         self._close_when_done = False
         self._stop_dialog: Adw.AlertDialog | None = None
@@ -105,10 +112,15 @@ class FlasherWindow(Adw.ApplicationWindow):
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         menu = Gio.Menu()
+        menu.append("Restore Drive…", "win.restore")
         menu.append("About USB Flasher", "app.about")
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
                                        primary=True, tooltip_text="Main Menu"))
         view.add_top_bar(header)
+
+        restore = Gio.SimpleAction.new("restore", None)
+        restore.connect("activate", lambda *_a: self.choose_restore_drive())
+        self.add_action(restore)
 
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.stack.add_named(self._build_select_page(), "select")
@@ -380,6 +392,7 @@ class FlasherWindow(Adw.ApplicationWindow):
             self._show_error("Can't Connect to udisks2", str(e))
             return
 
+        self.restoring = False
         self.flash_target = self.target
         self.cancel_event = threading.Event()
         job = FlashJob(
@@ -397,6 +410,7 @@ class FlasherWindow(Adw.ApplicationWindow):
         self.progress_detail.set_label("")
         self.cancel_button.set_label("Cancel")
         self.cancel_button.set_sensitive(True)
+        self.cancel_button.set_visible(True)
         self._on_stage(Stage.PREPARING)
         self.stack.set_visible_child_name("progress")
 
@@ -410,7 +424,86 @@ class FlasherWindow(Adw.ApplicationWindow):
                                        name="flash-job")
         self.worker.start()
 
-    def _run_job(self, job: FlashJob) -> None:  # worker thread
+    # ------------------------------------------------------------------
+    # Restoring a drive to normal storage
+    # ------------------------------------------------------------------
+
+    def choose_restore_drive(self) -> None:
+        if self.worker is not None or self.stack.get_visible_child_name() == "progress":
+            return
+        picker = DrivePicker(
+            self.monitor, image=None, allow_loop=self.allow_loop, selected=None,
+            on_selected=self.choose_restore_options, title="Select Drive to Restore",
+        )
+        picker.present(self)
+
+    def choose_restore_options(self, drive: DriveInfo) -> None:
+        RestoreDialog(drive, on_confirmed=lambda o: self.confirm_restore(drive, o)).present(self)
+
+    def confirm_restore(self, drive: DriveInfo, options: RestoreOptions) -> None:
+        fresh = self._current_drive(drive.object_path)
+        if fresh is None or unusable_reasons(fresh, None):
+            self._show_error("Can't Use This Drive",
+                             f"{drive.label} was removed or can no longer be used.")
+            return
+        drive = fresh
+        label = normalize_label(options.filesystem, options.label)
+        named = f' labelled "{label}"' if label else ""
+        body = (f"All data on {drive.label} ({drive.device}, {format_size(drive.size)}) "
+                f"will be permanently erased. The drive will get a single "
+                f"{options.filesystem.value} partition{named}.")
+        for w in drive.warnings:
+            body += f"\n\n{w}"
+        if drive.mount_points:
+            body += "\n\nIt will be unmounted first."
+        dialog = Adw.AlertDialog(heading=f"Erase {drive.label}?", body=body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("restore", "Erase and Restore")
+        dialog.set_response_appearance("restore", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", lambda _d, r: r == "restore"
+                       and self.start_restore(drive, options))
+        dialog.present(self)
+
+    def start_restore(self, drive: DriveInfo, options: RestoreOptions) -> None:
+        if self.worker is not None:
+            return
+        try:
+            client = self.client_factory()
+        except Exception as e:  # noqa: BLE001
+            self._show_error("Can't Connect to udisks2", str(e))
+            return
+
+        self.restoring = True
+        self.restore_options = options
+        self.flash_target = drive
+        self.cancel_event = threading.Event()
+        job = RestoreJob(
+            client, drive.object_path, options, allow_loop=self.allow_loop,
+            on_stage=lambda s: GLib.idle_add(self._on_stage, s),
+            cancel=self.cancel_event,
+        )
+        self.progress_subtitle.set_label(
+            f"{drive.label} ({drive.device}) → {options.filesystem.value}")
+        self.progress_bar.set_fraction(0)
+        self.progress_detail.set_label("")
+        self.cancel_button.set_visible(False)  # steps are quick and can't be interrupted
+        self._on_stage(Stage.PREPARING)
+        self.stack.set_visible_child_name("progress")
+        self._begin_worker(job, "Restoring a drive")
+
+    def _begin_worker(self, job, reason: str) -> None:
+        app = self.get_application()
+        if app is not None:
+            self._inhibit_cookie = app.inhibit(
+                self, Gtk.ApplicationInhibitFlags.SUSPEND | Gtk.ApplicationInhibitFlags.LOGOUT,
+                reason)
+        self.worker = threading.Thread(target=self._run_job, args=(job,), daemon=True,
+                                       name="restore-job")
+        self.worker.start()
+
+    def _run_job(self, job: FlashJob | RestoreJob) -> None:  # worker thread
         try:
             outcome = job.run()
         except Exception as e:  # noqa: BLE001 - never leave the UI stuck
@@ -456,7 +549,7 @@ class FlasherWindow(Adw.ApplicationWindow):
             self.progress_detail.set_label("")
         else:
             self.progress_detail.set_label(
-                "Enter your password if prompted" if stage is Stage.OPENING else "")
+                "Enter your password if prompted" if stage in AUTH_STAGES else "")
             self._start_pulse()
         return GLib.SOURCE_REMOVE
 
@@ -501,7 +594,7 @@ class FlasherWindow(Adw.ApplicationWindow):
         if app is not None and not self.is_active():
             note = Gio.Notification.new(self.result_page.get_title())
             note.set_body(self.result_page.get_description())
-            app.send_notification("flash-done", note)
+            app.send_notification("restore-done" if self.restoring else "flash-done", note)
         return GLib.SOURCE_REMOVE
 
     def _show_result(self, outcome: FlashOutcome) -> None:
@@ -511,6 +604,10 @@ class FlasherWindow(Adw.ApplicationWindow):
         self.eject_button.set_visible(False)
         self.eject_button.set_sensitive(True)
 
+        self.again_button.set_label("Done" if self.restoring else "Flash Another")
+        if self.restoring:
+            self._show_restore_result(outcome, drive)
+            return
         if outcome.status is Status.SUCCESS:
             page.set_icon_name("object-select-symbolic")
             page.set_title("Flash Complete")
@@ -534,6 +631,27 @@ class FlasherWindow(Adw.ApplicationWindow):
             page.set_title("Flash Failed")
             page.set_description(outcome.message or "Unknown error")
 
+        self.result_warning.set_label("\n".join(outcome.warnings))
+        self.result_warning.set_visible(bool(outcome.warnings))
+
+    def _show_restore_result(self, outcome: FlashOutcome, drive: DriveInfo) -> None:
+        page = self.result_page
+        if outcome.status is Status.SUCCESS:
+            fs = self.restore_options.filesystem.value
+            page.set_icon_name("object-select-symbolic")
+            page.set_title("Drive Restored")
+            page.set_description(f"{drive.label} now has a single {fs} partition.")
+            self.eject_button.set_visible(drive.drive_path is not None)
+        elif outcome.status is Status.CANCELLED:
+            page.set_icon_name("process-stop-symbolic")
+            page.set_title("Restore Cancelled")
+            page.set_description(
+                outcome.message if outcome.drive_modified
+                else "No changes were made to the drive.")
+        else:
+            page.set_icon_name("dialog-error-symbolic")
+            page.set_title("Restore Failed")
+            page.set_description(outcome.message or "Unknown error")
         self.result_warning.set_label("\n".join(outcome.warnings))
         self.result_warning.set_visible(bool(outcome.warnings))
 
@@ -581,12 +699,19 @@ class FlasherWindow(Adw.ApplicationWindow):
         if self._close_when_done or self._stop_dialog is not None:
             return True  # already asking, or stopping and closing when the job ends
 
-        dialog = Adw.AlertDialog(
-            heading="Stop Flashing?",
-            body="The drive will be left with an incomplete image and won't be "
-                 "usable until it is flashed again.",
-        )
-        dialog.add_response("continue", "Keep Flashing")
+        if self.restoring:
+            dialog = Adw.AlertDialog(
+                heading="Stop Restoring?",
+                body="The drive may be left without a usable filesystem.",
+            )
+            dialog.add_response("continue", "Keep Restoring")
+        else:
+            dialog = Adw.AlertDialog(
+                heading="Stop Flashing?",
+                body="The drive will be left with an incomplete image and won't be "
+                     "usable until it is flashed again.",
+            )
+            dialog.add_response("continue", "Keep Flashing")
         dialog.add_response("stop", "Stop and Close")
         dialog.set_response_appearance("stop", Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("continue")

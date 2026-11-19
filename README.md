@@ -36,6 +36,12 @@ and polkit asks for your password when needed.
 - Suspend and logout are blocked while flashing, and closing the window
   mid-flash asks for confirmation.
 - A command-line mode for listing drives and flashing.
+- **Restore Drive** (main menu): wipe a drive and leave one FAT32 or exFAT
+  partition with a label you choose, e.g. to reuse an installer stick. It
+  offers the same drives as flashing and asks for the same confirmation.
+  exFAT is the default above 32 GB; FAT32 cannot hold files over 4 GB. Uses an
+  MBR partition table and a quick format (nothing is zeroed). The password
+  prompt may appear twice.
 
 - Compressed images (`.xz`, `.gz`, `.bz2`, `.zip`, and `.zst` on Python 3.14+)
   are decompressed while writing. For `.gz` and `.bz2` the uncompressed size

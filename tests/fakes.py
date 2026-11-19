@@ -50,6 +50,8 @@ class FakeClient:
         self.open_error = None
         self.keep_mounted = False
         self.remount_after_rescan = False
+        self.table_error = None
+        self.format_error = None
 
     def snapshot(self):
         self.calls.append(("snapshot",))
@@ -74,6 +76,19 @@ class FakeClient:
         self.calls.append(("rescan", block_path))
         if self.remount_after_rescan:
             self.snap[B + "sdb1"]["Filesystem"]["MountPoints"] = ["/run/media/u/NEW"]
+
+    def create_partition_table(self, block_path, table_type):
+        self.calls.append(("create_table", block_path, table_type))
+        if self.table_error:
+            raise self.table_error
+
+    def create_partition_and_format(self, block_path, *, fs_type, label,
+                                    partition_type="", mkfs_args=None):
+        self.calls.append(("format", block_path, fs_type, label, partition_type,
+                           tuple(mkfs_args or ())))
+        if self.format_error:
+            raise self.format_error
+        return block_path + "1"
 
     def power_off(self, drive_path):
         self.calls.append(("power_off", drive_path))

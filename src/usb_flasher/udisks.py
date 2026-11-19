@@ -138,3 +138,37 @@ class UDisksClient:
             drive_path, UDISKS_IFACE_PREFIX + "Drive", "PowerOff",
             GLib.Variant("(a{sv})", (_no_options(),)), None, "eject the drive",
         )
+
+    def create_partition_table(self, block_path: str, table_type: str) -> None:
+        """Wipe the disk and write an empty partition table.
+
+        ``table_type`` is ``"dos"`` (MBR) or ``"gpt"``. This is
+        ``Block.Format``; the table type doubles as the "filesystem" type.
+        Needs the modify-device polkit action, so it may prompt.
+        """
+        self._call(
+            block_path, UDISKS_IFACE_PREFIX + "Block", "Format",
+            GLib.Variant("(sa{sv})", (table_type, _no_options())), None,
+            "create the partition table",
+        )
+
+    def create_partition_and_format(
+        self, block_path: str, *, fs_type: str, label: str, partition_type: str = "",
+        mkfs_args: list[str] | None = None,
+    ) -> str:
+        """Create one partition spanning the free space and format it.
+
+        ``block_path`` must carry a partition table. Returns the object path
+        of the new partition. A separate polkit action from
+        :meth:`create_partition_table`, so the password prompt may appear again.
+        """
+        format_options: dict[str, GLib.Variant] = {"label": GLib.Variant("s", label)}
+        if mkfs_args:
+            format_options["mkfs-args"] = GLib.Variant("as", mkfs_args)
+        result = self._call(
+            block_path, UDISKS_IFACE_PREFIX + "PartitionTable", "CreatePartitionAndFormat",
+            GLib.Variant("(ttssa{sv}sa{sv})", (
+                0, 0, partition_type, "", _no_options(), fs_type, format_options,
+            )), "(o)", "format the drive",
+        )
+        return result.unpack()[0]
