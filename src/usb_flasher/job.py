@@ -29,6 +29,8 @@ class Stage(enum.Enum):
     VERIFYING = "verifying"
     FINISHING = "finishing"
     EJECTING = "ejecting"
+    PARTITIONING = "partitioning"  # restore only; may show a polkit prompt
+    FORMATTING = "formatting"  # restore only; may show a polkit prompt
 
 
 class Client(Protocol):
@@ -38,6 +40,11 @@ class Client(Protocol):
     def unmount(self, fs_path: str) -> None: ...
     def open_exclusive(self, block_path: str) -> int: ...
     def rescan(self, block_path: str) -> None: ...
+    def create_partition_table(self, block_path: str, table_type: str) -> None: ...
+    def create_partition_and_format(
+        self, block_path: str, *, fs_type: str, label: str, partition_type: str = "",
+        mkfs_args: list[str] | None = None,
+    ) -> str: ...
     def power_off(self, drive_path: str) -> None: ...
 
 
@@ -73,6 +80,40 @@ def _status_for(e: Exception) -> Status:
 
 UNMOUNT_SETTLE_TRIES = 10
 UNMOUNT_SETTLE_DELAY = 0.2
+
+
+def check_target(snapshot: Snapshot, target: str, *, allow_loop: bool = False,
+                 source_path: str | os.PathLike | None = None,
+                 ) -> tuple[DriveInfo | None, str | None]:
+    """Find ``target`` and apply the :func:`classify_drives` safety rules.
+
+    Returns ``(drive, problem)``; ``problem`` is a user-facing message when
+    the drive is gone or must not be touched.
+    """
+    drive = None
+    for d in classify_drives(snapshot, allow_loop=allow_loop, include_hidden=True,
+                             source_path=source_path):
+        if d.object_path == target:
+            drive = d
+            break
+    if drive is None:
+        return None, "The drive is no longer connected."
+    if not drive.selectable:
+        return drive, f"{drive.device} cannot be used: " + "; ".join(drive.reasons)
+    return drive, None
+
+
+def unmount_all(client: Client, snapshot: Snapshot, target: str) -> Snapshot:
+    """Unmount everything on ``target`` (deepest first) and wait until udisks
+    reports it unmounted. Returns the fresh snapshot; raises on failure."""
+    for fs in mounted_filesystems(snapshot, target):
+        client.unmount(fs)
+    for _ in range(UNMOUNT_SETTLE_TRIES):
+        snapshot = client.snapshot()
+        if not mounted_filesystems(snapshot, target):
+            return snapshot
+        time.sleep(UNMOUNT_SETTLE_DELAY)
+    raise RuntimeError("The drive is still mounted after unmounting.")
 
 
 class FlashJob:
@@ -118,22 +159,9 @@ class FlashJob:
     def _cancelled(self) -> bool:
         return self.cancel.is_set()
 
-    def _find_drive(self, snapshot: Snapshot) -> DriveInfo | None:
-        for d in classify_drives(
-            snapshot, allow_loop=self.allow_loop, include_hidden=True,
-            source_path=self.image_path,
-        ):
-            if d.object_path == self.target:
-                return d
-        return None
-
     def _check_drive(self, snapshot: Snapshot) -> tuple[DriveInfo | None, str | None]:
-        drive = self._find_drive(snapshot)
-        if drive is None:
-            return None, "The drive is no longer connected."
-        if not drive.selectable:
-            return drive, f"{drive.device} cannot be used: " + "; ".join(drive.reasons)
-        return drive, None
+        return check_target(snapshot, self.target, allow_loop=self.allow_loop,
+                            source_path=self.image_path)
 
     # -- main ------------------------------------------------------------
 
@@ -171,26 +199,10 @@ class FlashJob:
         mounted = mounted_filesystems(snapshot, self.target)
         if mounted:
             self._enter(Stage.UNMOUNTING)
-            for fs in mounted:
-                try:
-                    self.client.unmount(fs)
-                except Exception as e:  # noqa: BLE001
-                    status = _status_for(e)
-                    return self._outcome(status, str(e), image_size=image.size or 0)
-
-            for attempt in range(UNMOUNT_SETTLE_TRIES):
-                try:
-                    snapshot = self.client.snapshot()
-                except Exception as e:  # noqa: BLE001
-                    return self._outcome(Status.ERROR, str(e), image_size=image.size or 0)
-                if not mounted_filesystems(snapshot, self.target):
-                    break
-                time.sleep(UNMOUNT_SETTLE_DELAY)
-            else:
-                return self._outcome(
-                    Status.ERROR, "The drive is still mounted after unmounting.",
-                    image_size=image.size or 0,
-                )
+            try:
+                snapshot = unmount_all(self.client, snapshot, self.target)
+            except Exception as e:  # noqa: BLE001
+                return self._outcome(_status_for(e), str(e), image_size=image.size or 0)
             drive, problem = self._check_drive(snapshot)
             if problem:
                 return self._outcome(Status.ERROR, problem, image_size=image.size or 0)

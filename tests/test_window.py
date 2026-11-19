@@ -43,6 +43,7 @@ Adw.init()
 from fakes import B, D, MB, TARGET_SIZE, AuthDismissed, FakeClient, stick_snapshot  # noqa: E402
 from usb_flasher.drive_picker import DrivePicker  # noqa: E402
 from usb_flasher.drives import classify_drives  # noqa: E402
+from usb_flasher.restore_dialog import RestoreDialog  # noqa: E402
 from usb_flasher.window import FlasherWindow  # noqa: E402
 
 
@@ -441,6 +442,97 @@ def test_drive_picker(drive_file, image):
         assert [d.device for d in picked] == ["/dev/sdb"]
         spin_for(0.3)
         assert picker._handler == 0  # disconnected from the monitor on close
+    finally:
+        win.destroy()
+
+
+def restore_flow(win, monitor, fs_index=None, label=None):
+    """Drive picker -> options dialog; returns the options dialog."""
+    win.activate_action("win.restore", None)
+    spin_for(0.3)
+    picker = win.get_visible_dialog()
+    assert isinstance(picker, DrivePicker)
+    picker.list.emit("row-activated", picker.rows[B + "sdb"])
+    spin_for(0.3)
+    dialog = win.get_visible_dialog()
+    assert isinstance(dialog, RestoreDialog)
+    if fs_index is not None:
+        dialog.fs_row.set_selected(fs_index)
+    if label is not None:
+        dialog.label_row.set_text(label)
+    return dialog
+
+
+def test_restore_flow(ui, drive_file):
+    win, client, monitor = ui
+    dialog = restore_flow(win, monitor, label="backup")
+    assert dialog.filesystem.value == "FAT32"  # a 4 MB drive
+    assert "4 GB" in dialog.note.get_label()
+    dialog._continue()
+    spin_for(0.3)
+
+    confirm = win.get_visible_dialog()
+    assert isinstance(confirm, Adw.AlertDialog)
+    assert "SanDisk Ultra" in confirm.get_heading()
+    assert "FAT32" in confirm.get_body() and "BACKUP" in confirm.get_body()
+    assert win.stack.get_visible_child_name() == "select"
+    assert client.names() == []
+
+    respond(confirm, "restore")
+    spin(lambda: win.stack.get_visible_child_name() == "result")
+    assert win.result_page.get_title() == "Drive Restored"
+    assert client.names() == ["unmount", "create_table", "format", "rescan"]
+    assert any(c[:4] == ("format", B + "sdb", "vfat", "BACKUP") for c in client.calls)
+    assert drive_file.read_bytes() == b"\xaa" * TARGET_SIZE  # nothing written raw
+    assert win.worker is None
+
+    win.reset()
+    assert win.stack.get_visible_child_name() == "select"
+
+
+def test_restore_cancel_confirm_does_nothing(ui):
+    win, client, monitor = ui
+    restore_flow(win, monitor)._continue()
+    spin_for(0.3)
+    respond(win.get_visible_dialog(), "cancel")
+    spin_for(0.1)
+    assert client.names() == []
+    assert win.worker is None
+
+
+def test_restore_invalid_label_blocks_continue(ui):
+    win, client, monitor = ui
+    dialog = restore_flow(win, monitor, label="x" * 12)
+    assert not dialog.button.get_sensitive()
+    assert dialog.error.get_visible()
+    dialog.label_row.set_text("ok")
+    assert dialog.button.get_sensitive()
+
+
+def test_restore_error_result(ui):
+    win, client, monitor = ui
+    client.format_error = RuntimeError("mkfs failed")
+    restore_flow(win, monitor)._continue()
+    spin_for(0.3)
+    respond(win.get_visible_dialog(), "restore")
+    spin(lambda: win.stack.get_visible_child_name() == "result")
+    assert win.result_page.get_title() == "Restore Failed"
+    assert "mkfs failed" in win.result_page.get_description()
+
+
+def test_restore_picker_lists_only_safe_drives(drive_file):
+    snap = stick_snapshot()
+    snap[B + "sdb"]["Block"]["HintSystem"] = True
+    client = FakeClient(drive_file, snap)
+    win, monitor = make_window(client)
+    try:
+        win.activate_action("win.restore", None)
+        spin_for(0.3)
+        picker = win.get_visible_dialog()
+        assert not picker.rows[B + "sdb"].get_sensitive()
+        picker.list.emit("row-activated", picker.rows[B + "sdb"])
+        spin_for(0.2)
+        assert not isinstance(win.get_visible_dialog(), RestoreDialog)
     finally:
         win.destroy()
 

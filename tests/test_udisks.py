@@ -47,3 +47,55 @@ def test_real_snapshot_smoke():
     for ifaces in snap.values():
         if "Block" in ifaces:
             assert ifaces["Block"]["Device"].startswith("/dev/")
+
+
+class RecordingConn:
+    """Stands in for Gio.DBusConnection; records calls, never touches a bus."""
+
+    def __init__(self, reply=None, error=None):
+        self.calls = []
+        self.reply = reply
+        self.error = error
+
+    def call_sync(self, bus, path, iface, method, params, reply_type, flags, timeout, cancel):
+        self.calls.append((path, iface, method, params.unpack() if params else None, flags))
+        if self.error:
+            raise self.error
+        return self.reply
+
+
+def test_create_partition_table_call():
+    conn = RecordingConn()
+    UDisksClient(conn).create_partition_table("/org/freedesktop/UDisks2/block_devices/sdb", "dos")
+    path, iface, method, args, flags = conn.calls[0]
+    assert (iface, method) == ("org.freedesktop.UDisks2.Block", "Format")
+    assert args == ("dos", {})
+    assert flags & Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION
+
+
+def test_create_partition_and_format_call():
+    from gi.repository import GLib
+    part = "/org/freedesktop/UDisks2/block_devices/sdb1"
+    conn = RecordingConn(reply=GLib.Variant("(o)", (part,)))
+    result = UDisksClient(conn).create_partition_and_format(
+        "/org/freedesktop/UDisks2/block_devices/sdb", fs_type="vfat", label="STICK",
+        partition_type="0x0c", mkfs_args=["-F", "32"])
+    assert result == part
+    _, iface, method, args, flags = conn.calls[0]
+    assert (iface, method) == ("org.freedesktop.UDisks2.PartitionTable", "CreatePartitionAndFormat")
+    offset, size, ptype, name, opts, fs_type, fmt_opts = args
+    assert (offset, size, ptype, name, opts, fs_type) == (0, 0, "0x0c", "", {}, "vfat")
+    assert fmt_opts == {"label": "STICK", "mkfs-args": ["-F", "32"]}
+    assert flags & Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION
+
+
+def test_format_errors_are_wrapped():
+    err = remote_error("org.freedesktop.UDisks2.Error.NotAuthorizedDismissed", "x")
+    with pytest.raises(UDisksError) as e:
+        UDisksClient(RecordingConn(error=err)).create_partition_table("/b", "dos")
+    assert e.value.auth_dismissed
+    err = remote_error("org.freedesktop.UDisks2.Error.Failed", "mkfs failed")
+    with pytest.raises(UDisksError) as e:
+        UDisksClient(RecordingConn(error=err)).create_partition_and_format(
+            "/b", fs_type="exfat", label="")
+    assert str(e.value) == "Failed to format the drive: mkfs failed"

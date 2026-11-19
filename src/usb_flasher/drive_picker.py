@@ -41,8 +41,9 @@ class DrivePicker(Adw.Dialog):
         allow_loop: bool,
         selected: str | None,
         on_selected: Callable[[DriveInfo], None],
+        title: str = "Select Target",
     ):
-        super().__init__(title="Select Target", content_width=460, content_height=420)
+        super().__init__(title=title, content_width=460, content_height=420)
         self.monitor = monitor
         self.image = image
         self.allow_loop = allow_loop
